@@ -10,6 +10,10 @@ from langchain.callbacks import get_openai_callback
 import requests
 from bs4 import BeautifulSoup
 
+from langchain.prompts import PromptTemplate
+from langchain.chains.summarize import load_summarize_chain
+from langchain.document_loaders import YoutubeLoader
+
 
 def init_page():
     st.set_page_config(
@@ -95,6 +99,33 @@ def build_prompt(content, n_chars=300):
 日本語で書いてね！
 """
 
+def get_document(url):
+    with st.spinner("Fetching Content ..."):
+        loader = YoutubeLoader.from_youtube_url(
+            url, 
+            add_video_info=True,
+            language=['en', 'ja']
+        )
+        return loader.load() # Document取得
+
+def summarize(llm, docs):
+    prompt_template = """Write a concise Japanese summary of the following transcript of Youtube Video.
+    
+{text}
+
+ここから日本語で書いてね。必ず3段落以内の200文字以内で簡潔にまとめること:
+"""
+    PROMPT = PromptTemplate(template=prompt_template, input_variables=["text"])
+
+    with get_openai_callback() as cb:
+        chain = load_summarize_chain(
+            llm,  # e.g. ChatOpenAI(temperature=0)
+            chain_type="stuff",
+            verbose=True,
+            prompt=PROMPT
+        )
+        response = chain({"input_documents": docs}, return_only_outputs=True)
+    return response['output_text'], cb.total_cost
 
 def main():
     init_page()
@@ -111,22 +142,21 @@ def main():
 
         if not is_valid_url:
             st.write('Please input valid url')
-            answer=None
+            output_text=None
         else:
-            content = get_content(url)
-            if content:
-                prompt = build_prompt(content)
-                st.session_state.messages.append(HumanMessage(content=prompt))
+            document = get_document(url)
+
+            if document:
                 with st.spinner("ChatGPT is typing ..."):
-                    answer, cost = get_answer(llm, st.session_state.messages)
+                    output_text, cost = summarize(llm, document)
                 st.session_state.costs.append(cost)
             else:
-                answer = None
+                output_text = None
 
-    if answer:
+    if output_text:
         with response_container:
             st.markdown("## Summary")
-            st.write(answer)
+            st.write(output_text)
             st.markdown("---")
             st.markdown("## Original Text")
             st.write(content)
