@@ -1,5 +1,6 @@
 from urllib.parse import urlparse
 import streamlit as st
+from langchain.llms import OpenAI
 from langchain.chat_models import ChatOpenAI
 from langchain.schema import (
     SystemMessage,
@@ -13,6 +14,8 @@ from bs4 import BeautifulSoup
 from langchain.prompts import PromptTemplate
 from langchain.chains.summarize import load_summarize_chain
 from langchain.document_loaders import YoutubeLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
 
 
 def init_page():
@@ -34,20 +37,24 @@ def init_messages():
 
 
 def select_model():
-    model = st.sidebar.radio("Choose a model:", ("GPT-3.5", "GPT-4"))
+    model = st.sidebar.radio("Choose a model:", ("GPT-3.5", "GPT-3.5-16k", "GPT-4"))
     if model == "GPT-3.5":
-        model_name = "gpt-3.5-turbo"
+        st.session_state.model_name = "gpt-3.5-turbo-0613"
+    if model == "GPT-3.5-16k":
+        st.session_state.model_name = "gpt-3.5-turbo-16k-0613"
     else:
         # https://help.openai.com/en/articles/7102672-how-can-i-access-gpt-4
         # 20230817時点では$1以上の課金してないので使えない
-        model_name = "gpt-4"
+        st.session_state.model_name = "gpt-4"
 
     # スライダーを追加し、temperatureを0から2までの範囲で選択可能にする
     # 初期値は0.0、刻み幅は0.01とする
     temperature = st.sidebar.slider(
         "Temperature:", min_value=0.0, max_value=2.0, value=0.0, step=0.01)
 
-    return ChatOpenAI(temperature=temperature, model_name=model_name)
+    # 300: 本文以外の指示のtoken数 (決めうちの雑な実装です…)
+    st.session_state.max_token = OpenAI.modelname_to_contextsize(st.session_state.model_name) - 300
+    return ChatOpenAI(temperature=0, model_name=st.session_state.model_name)
 
 
 def get_url_input():
@@ -106,7 +113,12 @@ def get_document(url):
             add_video_info=True,
             language=['en', 'ja']
         )
-        return loader.load() # Document取得
+        text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+            model_name=st.session_state.model_name,
+            chunk_size = st.session_state.max_token,
+            chunk_overlap=0
+        )
+        return loader.load_and_split(text_splitter=text_splitter) # Document取得
 
 def summarize(llm, docs):
     prompt_template = """Write a concise Japanese summary of the following transcript of Youtube Video.
@@ -120,11 +132,12 @@ def summarize(llm, docs):
     with get_openai_callback() as cb:
         chain = load_summarize_chain(
             llm,  # e.g. ChatOpenAI(temperature=0)
-            chain_type="stuff",
+            chain_type="map_reduce",
             verbose=True,
-            prompt=PROMPT
+            map_prompt=PROMPT,
+            combine_prompt=PROMPT
         )
-        response = chain({"input_documents": docs}, return_only_outputs=True)
+        response = chain({"input_documents": docs, "token_max": st.session_state.max_token}, return_only_outputs=True)
     return response['output_text'], cb.total_cost
 
 def main():
@@ -159,7 +172,7 @@ def main():
             st.write(output_text)
             st.markdown("---")
             st.markdown("## Original Text")
-            st.write(content)
+            st.write(document)
 
     costs = st.session_state.get('costs', [])
     st.sidebar.markdown("## Costs")
